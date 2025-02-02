@@ -16,6 +16,8 @@ using STL_Tools;
 using OpenTK.Graphics.OpenGL;
 using BatuGL;
 using Mouse_Orbit;
+using System.IO;
+using System.Collections.Generic;
 
 namespace STLViewer
 {
@@ -147,18 +149,182 @@ namespace STLViewer
                 GL_Monitor.SwapBuffers();
             }
         }
+        public enum ColorType
+        {
+            Green,
+            Red,
+            Blue
+        }
 
+        // 색상 점을 표현하는 클래스
+        public class ColorPoint
+        {
+            public float X { get; set; }
+            public float Y { get; set; }
+            public float Z { get; set; }
+            public int greenIndex { get; set; }
+            public ColorType Color { get; set; }
+        }
         private void FileMenuImportBt_Click(object sender, EventArgs e)
         {
             OpenFileDialog newFileDialog = new OpenFileDialog();
-            newFileDialog.Filter = "STL Files|*.stl;*.txt;";
+            newFileDialog.Filter = "Image Files|*.jpg;*.jpeg;*.png;*.bmp";
 
             if (newFileDialog.ShowDialog() == DialogResult.OK)
             {
-                ReadSelectedFile(newFileDialog.FileName);
+                string filePath = newFileDialog.FileName;
+                Bitmap image = new Bitmap(filePath);
+                pictureBox1.Image = image;
+
+                // 이미지를 처리합니다.
+                var greenRegions = DetectColorRegions(image, ColorType.Green);
+                var colorPoints = new List<ColorPoint>();
+                int index = 0;
+                foreach (var region in greenRegions)
+                {
+                    colorPoints.AddRange(DetectAreaColorRegions(image, region, index));
+                    index++;
+                }
+
+                // 녹색 영역과 색상 점을 이미지에 그립니다.
+                DrawDetectedRegions(image, greenRegions, colorPoints);
             }
         }
+        private void DrawDetectedRegions(Bitmap image, List<Rectangle> regions, List<ColorPoint> colorPoints)
+        {
+            using (Graphics g = Graphics.FromImage(image))
+            {
+                // 녹색 영역을 그립니다.
+                using (Pen greenPen = new Pen(Color.Lime, 2))
+                {
+                    foreach (var region in regions)
+                    {
+                        g.DrawRectangle(greenPen, region);
+                    }
+                }
 
+                // 빨강색과 파랑색 점을 그립니다.
+                foreach (var point in colorPoints)
+                {
+                    Brush brush = point.Color == ColorType.Red ? Brushes.Blue : Brushes.Red;
+                    g.FillEllipse(brush, point.X - 5, point.Y - 5, 10, 10);
+                }
+            }
+
+            // 결과 이미지를 PictureBox에 다시 설정합니다.
+            pictureBox1.Image = image;
+        }
+
+        // 특정 색상 영역을 검출하는 메서드
+        private List<Rectangle> DetectColorRegions(Bitmap image, ColorType colorType)
+        {
+            var regions = new List<Rectangle>();
+            bool[,] visited = new bool[image.Width, image.Height];
+
+            for (int x = 0; x < image.Width; x++)
+            {
+                for (int y = 0; y < image.Height; y++)
+                {
+                    if (!visited[x, y])
+                    {
+                        Color pixel = image.GetPixel(x, y);
+                        if (IsGreen(pixel))
+                        {
+                            Rectangle region = FloodFill(image, x, y, visited, ColorType.Green);
+                            if (region.Width > 5 && region.Height > 5)
+                                regions.Add(region);
+                        }
+                    }
+                }
+            }
+
+            return regions;
+        }
+        private List<ColorPoint> DetectAreaColorRegions(Bitmap image, Rectangle rect, int index)
+        {
+            var regions = new List<(Rectangle, ColorType color)>();
+            bool[,] visited = new bool[rect.Right, rect.Bottom];
+
+            for (int x = rect.Left; x < rect.Right; x++)
+            {
+                for (int y = rect.Top; y < rect.Bottom; y++)
+                {
+                    if (!visited[x, y])
+                    {
+                        Color pixel = image.GetPixel(x, y);
+                        if (IsRed(pixel))
+                        {
+                            Rectangle region = FloodFill(image, x, y, visited, ColorType.Red);
+                            if (region.Width > 10 && region.Height > 10)
+                                regions.Add((region, ColorType.Red));
+                        }
+                        else if (IsBlue(pixel))
+                        {
+                            Rectangle region = FloodFill(image, x, y, visited, ColorType.Blue);
+                            if (region.Width > 10 && region.Height > 10)
+                                regions.Add((region, ColorType.Blue));
+                        }
+                    }
+                }
+            }
+
+            var points = new List<ColorPoint>();
+            foreach (var region in regions)
+            {
+                int x = (region.Item1.Left + region.Item1.Right) / 2;
+                int y = (region.Item1.Top + region.Item1.Bottom) / 2;
+
+                points.Add(new ColorPoint { X = x, Y = y, greenIndex = index, Color = region.Item2 });
+            }
+
+            return points;
+        }
+        // Flood Fill 알고리즘을 사용하여 연속된 영역을 탐지
+        private Rectangle FloodFill(Bitmap image, int startX, int startY, bool[,] visited, ColorType colorType)
+        {
+            Queue<Point> queue = new Queue<Point>();
+            queue.Enqueue(new Point(startX, startY));
+            visited[startX, startY] = true;
+
+            int minX = startX, minY = startY, maxX = startX, maxY = startY;
+
+            while (queue.Count > 0)
+            {
+                Point current = queue.Dequeue();
+                int x = current.X;
+                int y = current.Y;
+
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+
+                foreach (var offset in new[] { new Point(-1, 0), new Point(1, 0), new Point(0, -1), new Point(0, 1) })
+                {
+                    int newX = x + offset.X;
+                    int newY = y + offset.Y;
+
+                    if (newX >= 0 && newX < image.Width && newY >= 0 && newY < image.Height && !visited[newX, newY])
+                    {
+                        Color pixel = image.GetPixel(newX, newY);
+                        if ((colorType == ColorType.Green && IsGreen(pixel)) || (colorType == ColorType.Red && IsRed(pixel)) || (colorType == ColorType.Blue && IsBlue(pixel)))
+                        {
+                            visited[newX, newY] = true;
+                            queue.Enqueue(new Point(newX, newY));
+                        }
+                    }
+                }
+            }
+
+            return new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
+        }
+
+        // 연두색인지 확인하는 메서드
+        private bool IsGreen(Color color) => color.G > 240 && color.R < 10 && color.B < 10;
+        // 빨강색인지 확인하는 메서드
+        private bool IsRed(Color color) => color.R > 240 && color.G < 10 && color.B < 10;
+        // 파랑색인지 확인하는 메서드
+        private bool IsBlue(Color color) => color.B > 240 && color.R < 10 && color.G < 10;
         private void FileMenuExitBt_Click(object sender, EventArgs e)
         {
             Application.Exit();
@@ -263,6 +429,14 @@ namespace STLViewer
         {
             AppAboutForm aboutForm = new AppAboutForm();
             aboutForm.ShowDialog();
+        }
+
+        private void FileMenuViewerBt_Click(object sender, EventArgs e)
+        {
+            pictureBox1.Visible = false;
+
+            string referenceImagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "result.stl");
+            ReadSelectedFile(referenceImagePath);
         }
     }
 }
